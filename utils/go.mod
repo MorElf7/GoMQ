@@ -1,13 +1,8 @@
 module github.com/MorElf7/go-redis/utils
 
-replace github.com/MorElf7/go-redis/server => ../server
-
 go 1.21.1
 
-require (
-	github.com/MorElf7/go-redis/server v0.0.0-00010101000000-000000000000
-	github.com/dgraph-io/badger/v4 v4.3.0
-)
+require github.com/dgraph-io/badger/v4 v4.3.0
 
 require (
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
@@ -17,7 +12,6 @@ require (
 	github.com/golang/groupcache v0.0.0-20200121045136-8c9f03a8e57e // indirect
 	github.com/golang/protobuf v1.5.4 // indirect
 	github.com/google/flatbuffers v1.12.1 // indirect
-	github.com/google/uuid v1.6.0 // indirect
 	github.com/klauspost/compress v1.17.9 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	go.opencensus.io v0.24.0 // indirect
