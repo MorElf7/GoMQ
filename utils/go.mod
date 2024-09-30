@@ -1,4 +1,4 @@
-module github.com/MorElf7/go-redis/utils
+module github.com/MorElf7/GoMQ/utils
 
 go 1.21.1
 
