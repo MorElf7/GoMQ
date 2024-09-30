@@ -1,16 +1,17 @@
 package utils
 
 import (
-	"log"
 	"net"
+	"os"
 	"sync"
-	"time"
+
+	"github.com/dgraph-io/badger/v4"
 )
 
 type ConsumerConnection struct {
-	ID             string        // Unique identifier for the consumer
-	Conn           net.Conn      // The network connection (e.g., TCP, WebSocket)
-	Offset         HLCMsg        // The last delivered message for this consumer
+	ID   string   // Unique identifier for the consumer
+	Conn net.Conn // The network connection (e.g., TCP, WebSocket)
+	// Offset         HLCMsg        // The last delivered message for this consumer
 	PendingMessage *MessageQueue // Message pending to be delivered
 	// Active         bool          // Show status of connection
 }
@@ -27,7 +28,7 @@ type TopicManager struct {
 	Mutex sync.RWMutex          // Mutex for thread-safe access
 }
 
-func NewTopicManager() *TopicManager {
+func NewTopicManager(logger *LoggerType) *TopicManager {
 	return &TopicManager{
 		Pools: make(map[string]*TopicPool),
 	}
@@ -37,8 +38,8 @@ func (tm *TopicManager) GetOrCreatePool(topic string) *TopicPool {
 	tm.Mutex.Lock()
 	defer tm.Mutex.Unlock()
 
-	if pool, exists := tm.Pools[topic]; exists {
-		return pool
+	if p, exists := tm.Pools[topic]; exists {
+		return p
 	}
 
 	pool := &TopicPool{
@@ -50,6 +51,58 @@ func (tm *TopicManager) GetOrCreatePool(topic string) *TopicPool {
 	return pool
 }
 
+// Save new message to disk
+func (tm *TopicManager) SavePool(db *badger.DB, logger *LoggerType, topic string) {
+	pool := tm.GetOrCreatePool(topic)
+
+	err := db.Update(func(txn *badger.Txn) error {
+		enc, err := EncodeQueue(pool.MessageLog)
+		if err != nil {
+			return err
+		}
+		txn.Set([]byte(topic), enc)
+		return nil
+	})
+
+	if err != nil {
+		logger.Error(err.Error())
+		return
+	}
+}
+
+// Load all saved pools on startup
+func (tm *TopicManager) LoadPools(db *badger.DB, logger *LoggerType) {
+	err := db.View(func(txn *badger.Txn) error {
+		opts := badger.DefaultIteratorOptions
+		it := txn.NewIterator(opts)
+		defer it.Close()
+		for it.Rewind(); it.Valid(); it.Next() {
+			item := it.Item()
+			k := item.Key()
+			err := item.Value(func(v []byte) error {
+				pool := tm.GetOrCreatePool(string(k))
+				q, err := DecodeQueue(v)
+				pool.MessageLog = q
+				if err != nil {
+					return err
+				}
+				return nil
+			})
+			if err != nil {
+				return err
+			}
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		logger.Error(err.Error())
+		return
+	}
+	logger.Info("Load topic done")
+}
+
 func (tm *TopicManager) SubscribeConsumer(topic, consumerId string, conn net.Conn) {
 	pool := tm.GetOrCreatePool(topic)
 
@@ -57,18 +110,21 @@ func (tm *TopicManager) SubscribeConsumer(topic, consumerId string, conn net.Con
 	defer pool.Mutex.Unlock()
 
 	pool.Connections[consumerId] = &ConsumerConnection{
-		ID:   consumerId,
-		Conn: conn,
+		ID:             consumerId,
+		Conn:           conn,
+		PendingMessage: NewMessageQueue(),
 	}
+
 }
 
-func (tm *TopicManager) PublishMessage(topic string, message HLCMsg) {
+func (tm *TopicManager) PublishMessage(db *badger.DB, logger *LoggerType, topic string, message *HLCMsg) {
 	tm.Mutex.RLock()
 	pool, exists := tm.Pools[topic]
 	tm.Mutex.RUnlock()
+	tm.SavePool(db, logger, topic)
 
 	if !exists {
-		log.Printf("No subscribers for topic %s", topic)
+		logger.Info("No subscribers for topic %s", topic)
 		return
 	}
 
@@ -77,7 +133,10 @@ func (tm *TopicManager) PublishMessage(topic string, message HLCMsg) {
 
 	for _, conn := range pool.Connections {
 		go func(c *ConsumerConnection) {
+			// c.Mutex.Lock()
+			// defer c.Mutex.Unlock()
 			c.PendingMessage.AddMessage(message)
+
 		}(conn)
 	}
 }
@@ -94,7 +153,7 @@ func (tm *TopicManager) UnsubscribeConsumer(topic, consumerId string) {
 	pool.Mutex.Lock()
 	defer pool.Mutex.Unlock()
 
-	if conn, exists := pool.Connections[consumerId]; exists {
+	if _, exists := pool.Connections[consumerId]; exists {
 		// conn.Conn.Close() // Optionally close the connection
 		delete(pool.Connections, consumerId)
 	}
@@ -137,6 +196,21 @@ func (tm *TopicManager) UnsubscribeConsumer(topic, consumerId string) {
 // 		conn.LastSeen = time.Now()
 // 	}
 // }
+
+func HandleNetworkErrorByPeer(logger *LoggerType, err error) {
+	if opErr, ok := err.(*net.OpError); ok && opErr.Err.Error() == "connection reset by peer" {
+		logger.Info("Connection reset by peer detected")
+		return
+	} else if err.Error() == "EOF" {
+		logger.Info("Connection closed by client")
+		return
+	} else if sysErr, ok := opErr.Err.(*os.SyscallError); ok && sysErr.Err.Error() == "broken pipe" {
+		logger.Info("Connection closed by client")
+		return
+	}
+
+	return
+}
 
 func (tm *TopicManager) ReplayMessageLog(topic, consumerId string) {
 	tm.Mutex.RLock()

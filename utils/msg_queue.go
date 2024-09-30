@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"container/heap"
 	"encoding/gob"
-	"os"
 	"sync"
 )
 
@@ -100,7 +99,9 @@ func (q *MessageQueue) GetNextMessage() *HLCMsg {
 	if q.heap.Len() == 0 {
 		return nil
 	}
-	return heap.Pop(q.heap).(*HLCMsg)
+	temp := heap.Pop(q.heap).(*HLCMsg)
+
+	return temp
 }
 
 func (q *MessageQueue) UpdateClock(remotePhysical, remoteLogical int64) {
@@ -133,35 +134,69 @@ func MessageDecode(data []byte) (ClientMessage, error) {
 	return message, nil
 }
 
-// Save queue to disk
-func (q *MessageQueue) SaveQueue() error {
-	//TODO
+// Encode the MessageQueue
+func EncodeQueue(q *MessageQueue) ([]byte, error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
-	var buf bytes.Buffer
-	enc := gob.NewEncoder(&buf)
-	if err := enc.Encode(q); err != nil {
-		return err
+	q.clock.mu.Lock()
+	defer q.clock.mu.Unlock()
+
+	var buffer bytes.Buffer
+	encoder := gob.NewEncoder(&buffer)
+
+	// Encode the heap and clock separately
+	err := encoder.Encode(struct {
+		Heap  MessageHeap
+		Clock struct {
+			Physical int64
+			Logical  int64
+		}
+	}{
+		Heap: *q.heap,
+		Clock: struct {
+			Physical int64
+			Logical  int64
+		}{
+			Physical: q.clock.Physical,
+			Logical:  q.clock.Logical,
+		},
+	})
+	if err != nil {
+		return nil, err
 	}
 
-	return os.WriteFile("data", buf.Bytes(), 0644)
+	return buffer.Bytes(), nil
 }
 
-// Load queue to disk
-func (q *MessageQueue) LoadQueue() error {
-	//TODO
-	q.mu.Lock()
-	defer q.mu.Unlock()
+// Decode the MessageQueue
+func DecodeQueue(data []byte) (*MessageQueue, error) {
+	// Temp struct for decoding
+	temp := struct {
+		Heap  MessageHeap
+		Clock struct {
+			Physical int64
+			Logical  int64
+		}
+	}{}
 
-	data, err := os.ReadFile("data")
+	var buf bytes.Buffer
+	buf.Write(data)
+	decoder := gob.NewDecoder(&buf)
+
+	err := decoder.Decode(&temp)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	buf := bytes.NewBuffer(data)
-	dec := gob.NewDecoder(buf)
-	return dec.Decode(q)
+	// Reinitialize the heap properties using heap.Init
+	mq := NewMessageQueue()
+	mq.heap = &temp.Heap
+	mq.clock.Physical = temp.Clock.Physical
+	mq.clock.Logical = temp.Clock.Logical
+	heap.Init(mq.heap)
+
+	return mq, nil
 }
 
 func (m *HLCMsg) DeepCopy() *HLCMsg {
