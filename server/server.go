@@ -2,7 +2,7 @@ package main
 
 import (
 	"bufio"
-	"log"
+	"fmt"
 	"net"
 	"os"
 	"time"
@@ -13,88 +13,66 @@ import (
 )
 
 func main() {
-	filePath := "/var/log/go-message-queue/go-message-queue-broker.txt"
-	dirPath := "/var/log/go-message-queue"
-
-	// Create directory if it doesn't exist
-	err := os.MkdirAll(dirPath, 0755)
-	if err != nil {
-		log.Println(err)
-	}
-
-	// Open or create the log file with write permissions
-	file, err := os.OpenFile(filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		log.Fatalf("Failed to open log file: %v", err)
-	}
-	defer file.Close()
-
-	// Set the output of the log to the file
-	log.SetOutput(file)
-
+	var logger = utils.NewLogger("./log-broker.txt")
 	listener, err := net.Listen("tcp", ":8080")
-	db, err := badger.Open(badger.DefaultOptions("/tmp/badger"))
 	if err != nil {
-		log.Fatal(err)
-	}
-	defer db.Close()
-	if err != nil {
-		log.Println("Error starting TCP server:", err)
+		logger.Error("Error starting TCP server: %s", err.Error())
 		os.Exit(1)
 	}
 	defer listener.Close()
-	log.Println("Server is listening on port 8080")
+	logger.Info("Server is listening on port 8080")
+
+	db, err := badger.Open(badger.DefaultOptions("/tmp/badger"))
+	if err != nil {
+		logger.Error(err.Error())
+		os.Exit(1)
+	}
+	defer db.Close()
 
 	// Init variables for run
-	topicManager := utils.NewTopicManager()
-	// topicManager.GetOrCreatePool("default")
+	topicManager := utils.NewTopicManager(logger)
+	topicManager.LoadPools(db, logger)
 
+	fmt.Println("Broker listening on port 8080")
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
-			log.Println("Error accepting connection:", err)
+			logger.Error("Error accepting connection: %s", err.Error())
 			continue
 		}
-		go handleConnection(conn, topicManager)
+		go handleConnection(conn, db, topicManager, logger)
 	}
 }
 
-func handleConnection(conn net.Conn, topicManager *utils.TopicManager) {
+func handleConnection(conn net.Conn, db *badger.DB, topicManager *utils.TopicManager, logger *utils.LoggerType) {
 	// defer conn.Close()
 	reader := bufio.NewReader(conn)
-	writer := bufio.NewWriter(conn)
+	// writer := bufio.NewWriter(conn)
 
 	// Handshake phase
-	var buf []byte
-	_, err := reader.Read(buf)
+	// 1 Mb buffer
+	buf := make([]byte, 1000000)
+	n, err := reader.Read(buf)
 	if err != nil {
-		log.Println("Error reading message:", err)
-		return
+		utils.HandleNetworkErrorByPeer(logger, err)
+		logger.Error("Error reading handshake: %s", err.Error())
 	}
 
-	msg, err := utils.MessageDecode(buf)
+	msg, err := utils.MessageDecode(buf[:n])
 	// TODO: Add authentication
 
 	if msg.Metadata.Role == "producer" {
-		// Ack to the client?
-		// writer.WriteString("Connected")
-		// writer.Flush()
-		go handleProducer(conn, topicManager, &msg)
+		go handleProducer(conn, db, topicManager, &msg, logger)
 	} else if msg.Metadata.Role == "consumer" {
-		// Ack to the client?
-		// writer.WriteString("Connected")
-		// writer.Flush()
-		go handleConsumer(conn, topicManager, &msg)
+		go handleConsumer(conn, topicManager, &msg, logger)
 	} else {
 		conn.Close()
 	}
 }
 
-func handleProducer(conn net.Conn, topicManager *utils.TopicManager, msg *utils.ClientMessage) {
+func handleProducer(conn net.Conn, db *badger.DB, topicManager *utils.TopicManager, msg *utils.ClientMessage, logger *utils.LoggerType) {
 	defer conn.Close()
-	// Listening for message from producer
 	message := msg.Payload
-	// log.Printf("Received message: %s", message)
 	id := uuid.New()
 	message.ID = id.String()
 	pool := topicManager.GetOrCreatePool(msg.Metadata.Topic)
@@ -102,13 +80,14 @@ func handleProducer(conn net.Conn, topicManager *utils.TopicManager, msg *utils.
 	pool.MessageLog.AddMessage(message)
 
 	// Ack to client?
+	// writer := bufio.NewWriter(conn)
 	// writer.WriteString("Done")
 	// writer.Flush()
 
-	topicManager.PublishMessage(msg.Metadata.Topic, message)
+	topicManager.PublishMessage(db, logger, msg.Metadata.Topic, message)
 }
 
-func handleConsumer(conn net.Conn, topicManager *utils.TopicManager, msg *utils.ClientMessage) {
+func handleConsumer(conn net.Conn, topicManager *utils.TopicManager, msg *utils.ClientMessage, logger *utils.LoggerType) {
 	defer conn.Close()
 	topic := msg.Metadata.Topic
 	replay := msg.Metadata.Replay
@@ -137,42 +116,57 @@ func handleConsumer(conn net.Conn, topicManager *utils.TopicManager, msg *utils.
 				},
 			}
 			msgEncode, err := utils.MessageEncode(clientMsg)
+			if err != nil {
+				logger.Error("Error decode message: %s", err)
+			}
 			maxRetries := 10
 			// Attempt sending messages
 			for attempt := 1; attempt <= maxRetries; attempt++ {
-				writer.Write(msgEncode)
-				writer.Flush()
+				logger.Info("Attemp %d sending message to consumer id %s", attempt, id)
+				_, err := writer.Write(msgEncode)
+				if err != nil {
+					utils.HandleNetworkErrorByPeer(logger, err)
+				} else {
 
-				// Wait for acknowledgment with a timeout
-				ackCh := make(chan string)
-				timeoutCh := time.After(2 * time.Second)
+					writer.Flush()
 
-				go func() {
-					// Try to read acknowledgment from the consumer
-					ack, err := reader.ReadString('\n')
-					if err != nil {
-						log.Println("Error receiving acknowledgment:", err)
-						close(ackCh)
-						return
+					// Wait for acknowledgment with a timeout
+					ackCh := make(chan string)
+					timeoutCh := time.After(2 * time.Second)
+
+					go func() {
+						// Try to read acknowledgment from the consumer
+						ack, err := reader.ReadString('\n')
+						if err != nil {
+							utils.HandleNetworkErrorByPeer(logger, err)
+							close(ackCh)
+							return
+						}
+						ackCh <- ack
+					}()
+
+					// Wait for acknowledgment or timeout
+					flag := false
+					select {
+					case ack := <-ackCh:
+						if ack == "ACK\n" {
+							flag = true
+							logger.Info("Acknowledgment received for message ID: %v\n", msg.ID)
+						} else {
+							logger.Error("Failed to receive acknowledgment for message ID: %v\n", msg.ID)
+						}
+					case <-timeoutCh:
+						logger.Error("Timeout! No acknowledgment received for message ID: %v\n", msg.ID)
 					}
-					ackCh <- ack
-				}()
 
-				// Wait for acknowledgment or timeout
-				select {
-				case ack := <-ackCh:
-					if ack == "ACK" {
-						log.Printf("Acknowledgment received for message ID: %v\n", msg.ID)
-					} else {
-						log.Printf("Failed to receive acknowledgment for message ID: %v\n", msg.ID)
+					if flag {
+						break
 					}
-				case <-timeoutCh:
-					log.Printf("Timeout! No acknowledgment received for message ID: %v\n", msg.ID)
-					// You can add retry logic or mark the message as failed here
+
 				}
-
 				if attempt == maxRetries {
 					// Reach Max Limit of failed attemps then close connection
+					logger.Info("Reach max attemp sending message to consumer id %s", id)
 					return
 				}
 			}

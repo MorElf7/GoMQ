@@ -1,54 +1,57 @@
-package main
+package client
 
 import (
 	"bufio"
-	"github.com/MorElf7/go-redis/utils"
-	"log"
 	"net"
-	"os"
+
+	"github.com/MorElf7/go-redis/utils"
 )
 
 type Client struct {
-	conn net.Conn
-}
-
-type ConsumerInterface interface {
-	HandleMessage(msg *string)
+	Conn   net.Conn
+	Logger *utils.LoggerType
 }
 
 type Consumer struct {
 	Client
-	ConsumerInterface
+	run         bool
+	EachMessage func(msg string)
 }
 
 type Producer struct {
 	Client
-	clock *utils.HLC
+	Clock *utils.HLC
 }
 
-func (c *Client) ConnectBroker(brokerAdr string) {
+func (c *Client) ConnectBroker(brokerAdr string) error {
 	conn, err := net.Dial("tcp", brokerAdr)
 	if err != nil {
-		log.Println("Error connected to broker:", err)
-		return
+		c.Logger.Error("Error connected to broker: %s", err)
+		return err
 	}
-	c.conn = conn
+	c.Conn = conn
+	return nil
 }
 
-func (c *Client) SendMessageToBroker(msg *utils.ClientMessage) {
-	writer := bufio.NewWriter(c.conn)
+func (c *Client) SendMessageToBroker(msg *utils.ClientMessage) error {
+	writer := bufio.NewWriter(c.Conn)
 	msgEncode, err := utils.MessageEncode(msg)
 	if err != nil {
-		log.Println(err)
+		c.Logger.Error(err.Error())
 	}
 
-	writer.Write(msgEncode)
+	_, err = writer.Write(msgEncode)
+	if err != nil {
+		return err
+	}
 	writer.Flush()
 
-	return
+	// Add ack for message published ?
+
+	return nil
 }
 
-func (c *Consumer) Subscribe(brokerAdr, topic string, replay bool) {
+func (c *Consumer) Subscribe(brokerAdr, topic string, replay bool) error {
 	// Prepare handshake
 	clientMessage := &utils.ClientMessage{
 		Metadata: utils.Metadata{
@@ -59,55 +62,55 @@ func (c *Consumer) Subscribe(brokerAdr, topic string, replay bool) {
 	}
 
 	c.ConnectBroker(brokerAdr)
-	defer c.conn.Close()
+	defer c.Conn.Close()
 	c.SendMessageToBroker(clientMessage)
-	brokerReader := bufio.NewReader(c.conn)
-	brokerWriter := bufio.NewWriter(c.conn)
-	var buf []byte
-	for {
-		_, err := brokerReader.Read(buf)
+	brokerReader := bufio.NewReader(c.Conn)
+	brokerWriter := bufio.NewWriter(c.Conn)
+	buf := make([]byte, 1000000)
+	c.run = true
+	for c.run {
+		// 1 Mb buffer
+		n, err := brokerReader.Read(buf)
 		if err != nil {
-			log.Println("Error receiving message from broker:", err)
+			return err
 		}
-		msgDecode, err := utils.MessageDecode(buf)
+		msgDecode, err := utils.MessageDecode(buf[:n])
 		if err != nil {
-			log.Println("Error decoding broker message:", err)
+			c.Logger.Error("Error decoding broker message: %s", err)
+			continue
 		}
 
-		brokerWriter.WriteString("ACK\n")
+		_, err = brokerWriter.WriteString("ACK\n")
+		if err != nil {
+			return err
+		}
 		brokerWriter.Flush()
 
-		c.HandleMessage(&msgDecode.Payload.Content)
+		c.EachMessage(msgDecode.Payload.Content)
 	}
 
+	return nil
+}
+
+func (c *Consumer) Stop() {
+	c.run = false
 }
 
 func NewConsumer() *Consumer {
-	filePath := "/var/log/go-message-queue/go-message-queue-consumer.txt"
-	dirPath := "/var/log/go-message-queue"
+	filePath := "./log-consumer.txt"
 
-	// Create directory if it doesn't exist
-	err := os.MkdirAll(dirPath, 0755)
-	if err != nil {
-		log.Println(err)
+	l := utils.NewLogger(filePath)
+
+	return &Consumer{
+		Client: Client{
+			Logger: l,
+		},
 	}
-
-	// Open or create the log file with write permissions
-	file, err := os.OpenFile(filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		log.Fatalf("Failed to open log file: %v", err)
-	}
-	defer file.Close()
-
-	// Set the output of the log to the file
-	log.SetOutput(file)
-
-	return &Consumer{}
 }
 
-func (p *Producer) Publish(brokerAdr, topic, message string) {
+func (p *Producer) Publish(brokerAdr, topic, message string) error {
 	// Prepare handshake
-	physical, logical := p.clock.Now()
+	physical, logical := p.Clock.Now()
 	hlcMessage := &utils.HLCMsg{
 		Content:  message,
 		Physical: physical,
@@ -122,32 +125,23 @@ func (p *Producer) Publish(brokerAdr, topic, message string) {
 		},
 	}
 
-	p.ConnectBroker(brokerAdr)
-	defer p.conn.Close()
-	p.SendMessageToBroker(clientMessage)
+	err := p.ConnectBroker(brokerAdr)
+	if err != nil {
+		return err
+	}
+	defer p.Conn.Close()
+	return p.SendMessageToBroker(clientMessage)
 }
 
 func NewProducer() *Producer {
-	filePath := "/var/log/go-message-queue/go-message-queue-producer.txt"
-	dirPath := "/var/log/go-message-queue"
+	filePath := "./log-producer.txt"
 
-	// Create directory if it doesn't exist
-	err := os.MkdirAll(dirPath, 0755)
-	if err != nil {
-		log.Println(err)
-	}
-
-	// Open or create the log file with write permissions
-	file, err := os.OpenFile(filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		log.Fatalf("Failed to open log file: %v", err)
-	}
-	defer file.Close()
-
-	// Set the output of the log to the file
-	log.SetOutput(file)
+	l := utils.NewLogger(filePath)
 
 	return &Producer{
-		clock: utils.NewHLC(),
+		Clock: utils.NewHLC(),
+		Client: Client{
+			Logger: l,
+		},
 	}
 }
