@@ -5,8 +5,7 @@ import (
 	"math/rand"
 	"time"
 
-	"github.com/MorElf7/go-redis/client"
-	// "github.com/MorElf7/go-redis/utils"
+	"github.com/MorElf7/GoMQ/client"
 )
 
 func main() {

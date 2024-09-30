@@ -2,14 +2,9 @@ module producer
 
 go 1.21.1
 
-replace github.com/MorElf7/go-redis/client => ../client
-
-replace github.com/MorElf7/go-redis/utils => ../utils
-
-require github.com/MorElf7/go-redis/client v0.0.0-00010101000000-000000000000
-
 require (
-	github.com/MorElf7/go-redis/utils v0.0.0-00010101000000-000000000000 // indirect
+	github.com/MorElf7/GoMQ/client v0.0.0-20240930032856-9cb0d6d5ba17 // indirect
+	github.com/MorElf7/GoMQ/utils v0.0.0-20240930032513-f061cdca4531 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/dgraph-io/badger/v4 v4.3.0 // indirect
 	github.com/dgraph-io/ristretto v0.1.2-0.20240116140435-c67e07994f91 // indirect
