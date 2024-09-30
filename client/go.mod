@@ -1,10 +1,8 @@
-module github.com/MorElf7/go-redis/client
+module github.com/MorElf7/GoMQ/client
 
 go 1.21.1
 
-replace github.com/MorElf7/go-redis/utils => ../utils
-
-require github.com/MorElf7/go-redis/utils v0.0.0-00010101000000-000000000000
+require github.com/MorElf7/GoMQ/utils v0.0.0-20240930032513-f061cdca4531
 
 require (
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect

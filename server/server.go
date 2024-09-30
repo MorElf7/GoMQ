@@ -7,7 +7,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/MorElf7/go-redis/utils"
+	"github.com/MorElf7/GoMQ/utils"
 	badger "github.com/dgraph-io/badger/v4"
 	"github.com/google/uuid"
 )

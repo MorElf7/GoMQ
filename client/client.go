@@ -4,7 +4,7 @@ import (
 	"bufio"
 	"net"
 
-	"github.com/MorElf7/go-redis/utils"
+	"github.com/MorElf7/GoMQ/utils"
 )
 
 type Client struct {
