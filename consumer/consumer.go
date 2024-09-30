@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/MorElf7/GoMQ/client"
+	GoMQ "github.com/MorElf7/GoMQ/client"
 )
 
 func main() {
@@ -17,7 +17,7 @@ func main() {
 }
 
 func SpawnConsumer(topic string) {
-	consumer := client.NewConsumer()
+	consumer := GoMQ.NewConsumer()
 	consumer.EachMessage = func(msg string) {
 		fmt.Printf("Received message %s\n", msg)
 	}

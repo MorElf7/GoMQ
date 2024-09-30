@@ -5,7 +5,7 @@ import (
 	"math/rand"
 	"time"
 
-	"github.com/MorElf7/GoMQ/client"
+	GoMQ "github.com/MorElf7/GoMQ/client"
 )
 
 func main() {
@@ -18,7 +18,7 @@ func main() {
 }
 
 func SpawnProducer(topic string) {
-	producer := client.NewProducer()
+	producer := GoMQ.NewProducer()
 	brokerAdr := "localhost:8080"
 	for {
 		err := producer.Publish(brokerAdr, topic, randomString())

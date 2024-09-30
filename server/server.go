@@ -13,8 +13,12 @@ import (
 )
 
 func main() {
+	// Change log file location
 	var logger = utils.NewLogger("./log-broker.txt")
+	// Change port if needed
 	listener, err := net.Listen("tcp", ":8080")
+
+	// Update any log message if need be
 	if err != nil {
 		logger.Error("Error starting TCP server: %s", err.Error())
 		os.Exit(1)
